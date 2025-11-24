@@ -1,15 +1,14 @@
-# portfolio_web.py – ULTIMATE: Stocks + Crypto + Dividend ETFs + 3-Month Forecast + Dark/Light
+# portfolio_web.py – FINAL: Dividend ETFs + Stocks + Crypto + AI Forecast + Dark/Light
 import streamlit as st
 import yfinance as yf
 import pandas as pd
 import plotly.graph_objects as go
-from plotly.subplots import make_subplots
-import json
 from datetime import datetime
 from groq import Groq
 import os
 
-client = Groq(api_key=st.secrets.get("GROQ_API_KEY"))
+# Get API key (works locally and on Streamlit Cloud)
+client = Groq(api_key=st.secrets.get("GROQ_API_KEY") or os.getenv("GROQ_API_KEY"))
 
 st.set_page_config(page_title="Ultimate Portfolio Pro", layout="wide")
 
@@ -17,139 +16,153 @@ st.set_page_config(page_title="Ultimate Portfolio Pro", layout="wide")
 theme = st.sidebar.radio("Theme", ["Dark", "Light"], horizontal=True)
 template = "plotly_dark" if theme == "Dark" else "plotly_white"
 
-st.title("Ultimate Portfolio: Stocks • Crypto • Dividend ETFs")
-st.caption("JEPI • JEPQ • QYLD • SCHD • HMAX • Real-time + AI + 3-month forecast")
+st.title("Ultimate Portfolio: ETFs • Stocks • Crypto")
+st.caption("JEPI • JEPQ • HMAX.TO • QYLD • SCHD • Live + AI + Dividends")
 
 PORTFOLIO_FILE = "my_portfolio.csv"
+
 @st.cache_data(ttl=60)
 def load_portfolio():
-    return pd.read_csv(PORTFOLIO_FILE).to_dict('records') if os.path.exists(PORTFOLIO_FILE) else []
+    if os.path.exists(PORTFOLIO_FILE):
+        return pd.read_csv(PORTFOLIO_FILE).to_dict('records')
+    return []
+
 portfolio = load_portfolio()
-def save_portfolio(): pd.DataFrame(portfolio).to_csv(PORTFOLIO_FILE, index=False)
+def save_portfolio():
+    pd.DataFrame(portfolio).to_csv(PORTFOLIO_FILE, index=False)
 
-# High-dividend ETF list (auto-shows yield)
-HIGH_DIV_ETFS = {
-    "HMAX.TO": "Hamilton Canadian Financials Yield Maximizer (~16-19% monthly)",
-    "JEPI": "JPMorgan Equity Premium Income (8-11% monthly)",
-    "JEPQ": "JPMorgan Nasdaq Equity Premium (9-13% monthly)",
-    "QYLD": "Global X Nasdaq 100 Covered Call (11-13% monthly)",
-    "XYLD": "Global X S&P 500 Covered Call (10-12% monthly)",
-    "SCHD": "Schwab US Dividend Equity (3.7% quarterly – stable)",
-    "DIV": "Global X SuperDividend (8-9% monthly)",
-    "SDIV": "Global X SuperDividend (10-12% monthly)"
-}
+# Top Dividend ETFs
+HIGH_DIV_ETFS = [
+    "HMAX.TO", "JEPI", "JEPQ", "QYLD", "XYLD", "RYLD",
+    "SCHD", "DIV", "SDIV", "SPYD", "VYM", "DVY"
+]
 
-def fmt(num): return f"${num:,.0f}" if isinstance(num, (int,float)) and num else "N/A"
+def get_price_and_yield(ticker):
+    try:
+        info = yf.Ticker(ticker).info
+        price = info.get("regularMarketPrice") or info.get("currentPrice") or 0
+        div_yield = info.get("trailingAnnualDividendYield")
+        yield_pct = f"{div_yield*100:.2f}%" if div_yield else "N/A"
+        return price, yield_pct
+    except:
+        return 0, "N/A"
 
 def plot_chart(ticker, period="1y"):
     df = yf.Ticker(ticker).history(period=period)
     if df.empty: return None
     fig = go.Figure()
-    fig.add_trace(go.Candlestick(x=df.index, open=df.Open, high=df.High, low=df.Low, close=df.Close))
+    fig.add_trace(go.Candlestick(x=df.index, open=df.Open, high=df.High,
+                                 low=df.Low, close=df.Close, name="Price"))
     fig.update_layout(height=600, template=template, xaxis_rangeslider_visible=False,
                       title=f"{ticker.upper()} – Live Chart")
     return fig
 
-def get_forecast(ticker):
-    stock = yf.Ticker(ticker)
-    info = stock.info
-    hist = stock.history(period="2y")
-    if hist.empty: return "No data", "N/A"
-    current = hist['Close'].iloc[-1]
-    div_yield = info.get("trailingAnnualDividendYield")
-    yield_pct = f"{div_yield*100:.2f}%" if div_yield else "N/A"
-
-    prompt = f"""Forecast {ticker.upper()} in 3 months.
-Current price: ${current:,.2f}
-Trailing dividend yield: {yield_pct}
-Market cap: {fmt(info.get('marketCap'))}
-92-day performance: {((current/hist['Close'].iloc[-92])-1)*100:+.2f}% if enough data
-
-Return ONLY:
-PRICE: $X,XXX | CONFIDENCE: High/Medium/Low | REASON: short sentence
-"""
+def get_ai_forecast(ticker):
     try:
+        stock = yf.Ticker(ticker)
+        info = stock.info
+        current = info.get("regularMarketPrice") or info.get("currentPrice") or 0
+        div_yield = info.get("trailingAnnualDividendYield", 0)
+        prompt = f"""Forecast {ticker.upper()} price in 3 months.
+Current: ${current:,.2f} | Yield: {div_yield*100:.2f}% | Market Cap: {info.get('marketCap','N/A'):,}
+Give only: PRICE: $X,XXX | CONFIDENCE: High/Medium/Low | REASON: short sentence"""
         resp = client.chat.completions.create(
             model="llama-3.3-70b-versatile",
-            messages=[{"role":"user","content":prompt}],
-            temperature=0.4, max_tokens=120
+            messages=[{"role": "user", "content": prompt}],
+            temperature=0.4,
+            max_tokens=120
         ).choices[0].message.content.strip()
+        return resp
     except:
-        resp = "PRICE: N/A | CONFIDENCE: N/A | REASON: AI unavailable"
-    return resp, yield_pct
+        return "AI unavailable – check your key"
 
+# TABS
 tab1, tab2, tab3, tab4 = st.tabs(["AI + Forecast", "Dividend ETFs", "Portfolio", "Add"])
 
-# TAB 1 – Any asset
+# TAB 1
 with tab1:
     st.header("AI Analysis + 3-Month Forecast")
-    ticker = st.text_input("Any ticker", "JEPI").upper()
-    if st.button("Analyze + Forecast", type="primary"):
-        forecast, div_yield = get_forecast(ticker)
-        st.success(f"**{ticker}** • Yield: {div_yield}")
-        st.markdown(f"### 3-Month AI Forecast\n{forecast}")
+    ticker = st.text_input("Enter ticker", "JEPI").upper()
+    if st.button("Get Forecast", type="primary"):
+        with st.spinner("AI thinking..."):
+            forecast = get_ai_forecast(ticker)
+            price, yield_pct = get_price_and_yield(ticker)
+            st.success(f"**{ticker}** • ${price:,.2f} • Yield: {yield_pct}")
+            st.markdown(f"### 3-Month AI Forecast\n{forecast}")
     chart = plot_chart(ticker)
     if chart: st.plotly_chart(chart, use_container_width=True)
 
-# TAB 2 – High Dividend ETFs
+# TAB 2 – Dividend ETFs
 with tab2:
     st.header("Top Dividend ETFs (2025)")
-    for etf, desc in HIGH_DIV_ETFS.items():
-        col1, col2, col3 = st.columns([1,2,2])
-        with col1:
-            st.write(f"**{etf}**")
-        with col2:
-            price =  # live price
-            price = yf.Ticker(etf).info.get("regularMarketPrice") or yf.Ticker(etf).info.get("currentPrice")
-            if price: st.write(f"**${price:.2f}**")
-        with col3:
-            st.caption(desc)
+    for etf in HIGH_DIV_ETFS:
+        price, yield_pct = get_price_and_yield(etf)
+        col1, col2, col3 = st.columns([2, 2, 4])
+        col1.write(f"**{etf}**")
+        col2.write(f"**${price:,.2f}**" if price else "Loading...")
+        col3.write(f"**Yield: {yield_pct}**")
         st.divider()
 
-# TAB 3 – Portfolio (now shows dividend yield too)
+# TAB 3 – Portfolio
 with tab3:
-    st.header("Live Portfolio")
+    st.header("Live Portfolio (with Dividend Yield)")
     if not portfolio:
-        st.info("Add positions →")
+        st.info("No holdings yet → Add in last tab")
     else:
-        rows = []; total_cost = total_value = 0; pie_l = []; pie_v = []
+        rows = []
+        total_cost = total_value = 0
+        pie_labels = []
+        pie_values = []
+
         for p in portfolio:
-            live = yf.Ticker(p["ticker"]).info.get("regularMarketPrice")  # supports HMAX.TO, JEPI, etc.
-            live = live or yf.Ticker(p["ticker"]).info.get("currentPrice") or 0
-            value = p["shares"] * live
+            live_price, div_yield = get_price_and_yield(p["ticker"])
+            value = p["shares"] * live_price
             cost = p["shares"] * p["buy_price"]
             gain = value - cost
-            gain_pct = (gain/cost)*100 if cost else 0
-            div_yield = yf.Ticker(p["ticker"]).info.get("trailingAnnualDividendYield")
-            yield_str = f"{div_yield*100:.2f}%" if div_yield else "N/A"
-            total_cost += cost; total_value += value
-            pie_l.append(f"{p['ticker']} (${value:,.0f})"); pie_v.append(value)
-            rows.append({"Asset":p["ticker"],"Shares":p["shares"],"Buy":p["buy_price"],
-                         "Now":f"${live:,.2f}","Value":f"${value:,.0f}",
-                         "Yield":yield_str,"Gain":f"{gain:+,.0f} ({gain_pct:+.2f}%)"})
+            gain_pct = (gain / cost) * 100 if cost else 0
+
+            total_cost += cost
+            total_value += value
+            pie_labels.append(f"{p['ticker']} (${value:,.0f})")
+            pie_values.append(value)
+
+            rows.append({
+                "Asset": p["ticker"],
+                "Shares": p["shares"],
+                "Buy $": f"${p['buy_price']:,.2f}",
+                "Now $": f"${live_price:,.2f}",
+                "Value": f"${value:,.0f}",
+                "Yield": div_yield,
+                "Gain": f"{gain:+,.0f} ({gain_pct:+.2f}%)"
+            })
+
         df = pd.DataFrame(rows)
         st.dataframe(df, use_container_width=True)
-        c1,c2,c3 = st.columns(3)
-        c1.metric("Invested", f"${total_cost:,.0f}")
-        c2.metric("Value", f"${total_value:,.0f}")
-        c3.metric("Gain", f"${total_value-total_cost:+,.0f}", f"{(total_value/total_cost-1)*100:+.2f}%")
-        fig = go.Figure(go.Pie(labels=pie_l, values=pie_v, hole=0.4, textinfo='label+percent'))
-        fig.update_layout(template=template, title="Allocation")
+
+        col1, col2, col3 = st.columns(3)
+        total_gain = total_value - total_cost
+        total_pct = (total_gain / total_cost) * 100 if total_cost else 0
+        col1.metric("Invested", f"${total_cost:,.0f}")
+        col2.metric("Current Value", f"${total_value:,.0f}")
+        col3.metric("Total Gain", f"${total_gain:+,.0f}", f"{total_pct:+.2f}%")
+
+        fig = go.Figure(go.Pie(labels=pie_labels, values=pie_values, hole=0.4, textinfo='label+percent'))
+        fig.update_layout(template=template, title="Portfolio Allocation")
         st.plotly_chart(fig, use_container_width=True)
 
 # TAB 4 – Add
 with tab4:
     st.header("Add Position")
     with st.form("add"):
-        c1,c2,c3 = st.columns(3)
-        with c1: t = st.text_input("Ticker", "HMAX.TO").upper()
-        with c2: s = st.number_input("Shares", 0.01, value=100.0)
-        with c3: p = st.number_input("Buy Price $", 0.01)
-        if st.form_submit_button("Add"):
-            portfolio.append({"ticker":t,"shares":s,"buy_price":p})
+        c1, c2, c3 = st.columns(3)
+        with c1: ticker = st.text_input("Ticker", "HMAX.TO").upper()
+        with c2: shares = st.number_input("Shares", 0.01, value=100.0)
+        with c3: buy_price = st.number_input("Buy Price $", 0.01)
+        if st.form_submit_button("Add to Portfolio"):
+            portfolio.append({"ticker": ticker, "shares": shares, "buy_price": buy_price})
             save_portfolio()
-            st.success("Added!")
+            st.success(f"{ticker} × {shares} @ ${buy_price} added!")
             st.rerun()
 
-st.sidebar.success("Stocks • Crypto • Dividend ETFs • AI Forecast")
+st.sidebar.success("Dividend ETFs • AI Forecast • Dark/Light Mode")
 st.sidebar.caption(f"Live • {datetime.now().strftime('%H:%M')}")
